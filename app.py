@@ -217,57 +217,155 @@ empates_reales = empates_reales.sort_values(
 # =========================
 # RENDER RESUMEN EN HTML (mismo estilo)
 # =========================
+import io
+import pandas as pd
+import streamlit as st
+
+# ========= Helpers =========
 def fmt_money4(x):
     try:
         return f"${float(x):,.4f}"
     except:
         return x
 
-html = """
-<div class='box'>
-  <h3>💼 Tu cotización ha finalizado</h3>
-  <p style='color:#7F8C8D; margin-top:-6px'>
-    Resumen profesional a partir de precios mínimos y empates por SKU (precisión: {prec} decimales).
-  </p>
-  <h4>🏆 Ganadores por proveedor</h4>
-""".format(prec=precision_empate)
+if "empate_sel" not in st.session_state:
+    st.session_state.empate_sel = {}   # {sku_str: proveedor_elegido}
 
-if not ganadores_unicos.empty:
-    for prov, g in ganadores_unicos.groupby('Proveedor', sort=True):
-        g2 = (
-            g[['SKU','Nombre_canonico','Precio Unitario']]
-            .rename(columns={'Nombre_canonico':'Nombre', 'Precio Unitario':'Precio'})
-            .sort_values(['SKU'])
-            .copy()
-        )
-        g2['Precio'] = g2['Precio'].map(fmt_money4)
-        html += f"<h5>🏪 {prov}</h5>"
-        html += g2.to_html(index=False, escape=False, classes='tbl')
-        html += "<br>"
+if "cantidades" not in st.session_state:
+    st.session_state.cantidades = {}   # {(prov, sku_str): int}
+
+st.markdown("<div class='box'>", unsafe_allow_html=True)
+st.markdown("<h3>💼 Tu cotización ha finalizado</h3>", unsafe_allow_html=True)
+st.write(f"Resumen con precisión de empate: **{precision_empate}** decimales.")
+
+# ========= 2.1 Selección de proveedor por cada SKU empatado =========
+st.markdown("<h4>⚖️ Empates detectados</h4>", unsafe_allow_html=True)
+
+if empates_reales.empty:
+    st.info("No hay empates.")
 else:
-    html += "<p style='color:#7F8C8D;'>No hay ganadores únicos por SKU.</p>"
-
-html += "<hr><h4>⚖️ Empates detectados</h4>"
-
-if not empates_reales.empty:
     for sku, g in empates_reales.groupby('SKU_str', sort=False):
         nombre = g.iloc[0]['Nombre_canonico']
-        html += f"<h5>SKU {sku} — {nombre}</h5>"
-        e2 = (
-            g[['Proveedor','Precio Unitario']]
-            .rename(columns={'Precio Unitario':'Precio'})
-            .sort_values(['Proveedor'])
+        st.markdown(f"**SKU {sku} — {nombre}**")
+
+        proveedores = list(g['Proveedor'].unique())
+        # selección única (radio evita errores de texto)
+        default_idx = 0
+        if sku in st.session_state.empate_sel and st.session_state.empate_sel[sku] in proveedores:
+            default_idx = proveedores.index(st.session_state.empate_sel[sku])
+
+        elegido = st.radio(
+            "Elige proveedor para este SKU",
+            proveedores,
+            index=default_idx,
+            key=f"radio_{sku}",
+            horizontal=True
+        )
+        st.session_state.empate_sel[sku] = elegido
+
+        # muestra tabla de ese empate (informativa)
+        g_show = g[['Proveedor','Precio Unitario']].rename(columns={'Precio Unitario':'Precio'}).copy()
+        g_show['Precio'] = g_show['Precio'].map(fmt_money4)
+        st.markdown(g_show.to_html(index=False, classes='tbl', escape=False), unsafe_allow_html=True)
+        st.write("")
+
+st.markdown("<hr/>", unsafe_allow_html=True)
+
+# ========= 2.2 Construir “ganadores” por proveedor incluyendo elecciones de empates =========
+# Base: ganadores_unicos (ya son únicos)
+gan_base = ganadores_unicos[['Proveedor','SKU','SKU_str','Nombre_canonico','Precio Unitario']].copy()
+
+# Agregar elegidos de los empates
+if not empates_reales.empty and len(st.session_state.empate_sel) > 0:
+    elegidas = []
+    for sku, prov_elegido in st.session_state.empate_sel.items():
+        block = empates_reales[(empates_reales['SKU_str'] == sku) & (empates_reales['Proveedor'] == prov_elegido)]
+        if not block.empty:
+            # tomamos una fila (todas tienen el mismo precio en el empate)
+            elegidas.append(block[['Proveedor','SKU','SKU_str','Nombre_canonico','Precio Unitario']].iloc[0])
+    if elegidas:
+        gan_extra = pd.DataFrame(elegidas)
+        gan_total = pd.concat([gan_base, gan_extra], ignore_index=True)
+    else:
+        gan_total = gan_base.copy()
+else:
+    gan_total = gan_base.copy()
+
+# ========= 2.3 Cantidades por proveedor y cálculo de totales =========
+st.markdown("<h4>🏆 Ganadores por proveedor</h4>", unsafe_allow_html=True)
+
+# Safeguard: si por alguna razón no hay ganadores, avisa
+if gan_total.empty:
+    st.info("No hay ganadores por proveedor aún. Elige proveedores en los empates si aplica.")
+else:
+    proveedores_orden = sorted(gan_total['Proveedor'].unique())
+    tablas_por_proveedor = {}  # guardaremos los DF finales para exportación
+
+    for prov in proveedores_orden:
+        st.markdown(f"<h5>🏪 {prov}</h5>", unsafe_allow_html=True)
+        g = (
+            gan_total[gan_total['Proveedor'] == prov]
+            [['SKU_str','Nombre_canonico','Precio Unitario']]
+            .rename(columns={'SKU_str':'SKU','Nombre_canonico':'Nombre'})
+            .sort_values('SKU')
             .copy()
         )
-        e2['Precio'] = e2['Precio'].map(fmt_money4)
-        html += e2.to_html(index=False, escape=False, classes='tbl')
-        html += "<br>"
+
+        # campo de cantidad por fila (entero >= 0)
+        cantidades = []
+        for _, row in g.iterrows():
+            sku = str(row['SKU'])
+            key = (prov, sku)
+            if key not in st.session_state.cantidades:
+                st.session_state.cantidades[key] = 0
+            qty = st.number_input(
+                f"Cantidad — SKU {sku}",
+                min_value=0, step=1,
+                value=st.session_state.cantidades[key],
+                key=f"qty_{prov}_{sku}"
+            )
+            st.session_state.cantidades[key] = qty
+            cantidades.append(qty)
+
+        g['Cantidad'] = cantidades
+        g['Total'] = (pd.to_numeric(g['Precio Unitario'], errors='coerce') * g['Cantidad']).fillna(0.0)
+
+        # reordenar columnas para vista/descarga
+        g = g[['Cantidad','SKU','Nombre','Precio Unitario','Total']]
+
+        # Mostrar tabla (formateo precios)
+        g_view = g.copy()
+        g_view['Precio Unitario'] = g_view['Precio Unitario'].map(fmt_money4)
+        g_view['Total'] = g_view['Total'].map(fmt_money4)
+        st.markdown(g_view.to_html(index=False, classes='tbl', escape=False), unsafe_allow_html=True)
+        st.write("")
+
+        tablas_por_proveedor[prov] = g
+
+# ========= 2.4 Descargar Excel final por proveedor =========
+# (1 archivo, varias hojas: una por proveedor, columnas en orden requerido)
+if gan_total.empty:
+    st.warning("No hay nada para exportar todavía.")
 else:
-    html += "<p style='color:#7F8C8D;'>No hay empates.</p>"
+    output = io.BytesIO()
+    cst = pytz.timezone("America/Mexico_City")
+    timestamp = datetime.datetime.now(cst).strftime("%Y%m%d_%H%M%S")
+    excel_name = f"pedido_por_proveedor_{timestamp}.xlsx"
 
-html += "</div>"
+    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+        for prov, dfprov in tablas_por_proveedor.items():
+            # Garantiza tipos y orden
+            outdf = dfprov[['Cantidad','SKU','Nombre','Precio Unitario','Total']].copy()
+            outdf.to_excel(writer, index=False, sheet_name=str(prov)[:31])  # Excel limita a 31 chars
 
-st.markdown(html, unsafe_allow_html=True)
+    st.download_button(
+        label="📥 Generar Excel por proveedor",
+        data=output.getvalue(),
+        file_name=excel_name,
+        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
+    )
+
+st.markdown("</div>", unsafe_allow_html=True)
 
 # =========================
 # DESCARGA DEL EXCEL (en memoria)
@@ -276,21 +374,6 @@ cst = pytz.timezone("America/Mexico_City")
 timestamp = datetime.datetime.now(cst).strftime("%Y%m%d_%H%M%S")
 excel_name = f"cotizacion_{timestamp}.xlsx"
 
-# Crea un Excel con hojas útiles
-output = io.BytesIO()
-with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-    merged_df.to_excel(writer, index=False, sheet_name="Combinado")
-    mejores_precios_df.to_excel(writer, index=False, sheet_name="Mejores")
-    empates_df.to_excel(writer, index=False, sheet_name="Empates_base")
-    ganadores_unicos.to_excel(writer, index=False, sheet_name="Ganadores_unicos")
-    empates_reales.to_excel(writer, index=False, sheet_name="Empates_reales")
-
-st.download_button(
-    label="💾 Descargar Excel",
-    data=output.getvalue(),
-    file_name=excel_name,
-    mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-)
 
 # =========================
 # DEBUG OPCIONAL
