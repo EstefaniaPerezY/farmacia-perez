@@ -356,31 +356,31 @@ with tab_pedido:
               g_view['Total'] = g_view['Total'].map(lambda x: f"${float(x):,.4f}")
               st.markdown(g_view.to_html(index=False, classes='tbl', escape=False), unsafe_allow_html=True)
           
-          else:
-              # ===== MODO TABLA EDITABLE (data_editor) =====
-              edited = st.data_editor(
-                  base.assign(Cantidad=[
-                      st.session_state.cantidades.get((prov, str(sku)), 0) for sku in base['SKU']
-                  ]),
-                  num_rows="fixed",
-                  column_config={
-                      "Cantidad": st.column_config.NumberColumn("Cantidad", min_value=0, step=1),
-                      "Precio Unitario": st.column_config.NumberColumn("Precio Unitario", format="$%.4f", disabled=True),
-                      "Total": st.column_config.NumberColumn("Total", format="$%.4f", disabled=True),
-                      "SKU": st.column_config.TextColumn("SKU", disabled=True),
-                      "Nombre": st.column_config.TextColumn("Nombre", disabled=True),
-                  },
-                  use_container_width=True,
-                  hide_index=True,
-                  key=f"edit_{prov}"
-              )
-              edited['Total'] = edited['Cantidad'] * edited['Precio Unitario']
-          
-              # Persistir cantidades en session_state
-              for _, r in edited.iterrows():
-                  st.session_state.cantidades[(prov, str(r['SKU']))] = int(r['Cantidad'])
-          
-              tablas_por_proveedor[prov] = edited[['Cantidad','SKU','Nombre','Precio Unitario','Total']].copy()
+            else:
+                # ===== MODO TABLA EDITABLE (data_editor) =====
+                edited = st.data_editor(
+                    base.assign(Cantidad=[
+                        st.session_state.cantidades.get((prov, str(sku)), 0) for sku in base['SKU']
+                    ]),
+                    num_rows="fixed",
+                    column_config={
+                        "Cantidad": st.column_config.NumberColumn("Cantidad", min_value=0, step=1),
+                        "Precio Unitario": st.column_config.NumberColumn("Precio Unitario", format="$%.4f", disabled=True),
+                        "Total": st.column_config.NumberColumn("Total", format="$%.4f", disabled=True),
+                        "SKU": st.column_config.TextColumn("SKU", disabled=True),
+                        "Nombre": st.column_config.TextColumn("Nombre", disabled=True),
+                    },
+                    use_container_width=True,
+                    hide_index=True,
+                    key=f"edit_{prov}"
+                )
+                edited['Total'] = edited['Cantidad'] * edited['Precio Unitario']
+            
+                # Persistir cantidades en session_state
+                for _, r in edited.iterrows():
+                    st.session_state.cantidades[(prov, str(r['SKU']))] = int(r['Cantidad'])
+            
+                tablas_por_proveedor[prov] = edited[['Cantidad','SKU','Nombre','Precio Unitario','Total']].copy()
           
           # Subtotal por proveedor (común a ambos modos)
           subtotal = float(tablas_por_proveedor[prov]['Total'].sum())
