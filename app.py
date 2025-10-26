@@ -64,6 +64,8 @@ with st.sidebar:
     )
     mostrar_previas = st.checkbox("Mostrar tablas intermedias", value=False)
     limpiar_resultados = st.checkbox("Limpiar carpeta 'resultados' de días anteriores", value=True)
+    modo_flechas = st.toggle("Editar cantidades con flechas (por fila)", value=False)
+
 
 # =========================
 # INPUT: Archivos
@@ -243,35 +245,46 @@ with tab_empates:
     if empates_reales.empty:
         st.info("No hay empates.")
     else:
-        # progreso (cuántos SKUs empatados ya tienen elección)
         skus_empatados = sorted(empates_reales['SKU_str'].unique())
+
+        # Progreso: solo cuentan los SKUs que ya tienen proveedor elegido (no placeholder)
         resueltos = sum(1 for s in skus_empatados if s in st.session_state.empate_sel)
         st.write(f"Progreso: **{resueltos}/{len(skus_empatados)} SKUs**")
-        st.progress(resueltos / len(skus_empatados))
+        st.progress(resueltos / len(skus_empatados) if len(skus_empatados) else 0.0)
+
+        PLACEHOLDER = "— Selecciona proveedor —"
 
         for sku, g in empates_reales.groupby('SKU_str', sort=False):
             nombre = g.iloc[0]['Nombre_canonico']
             st.markdown(f"**SKU {sku} — {nombre}**")
 
             proveedores = list(g['Proveedor'].unique())
-            default_idx = 0
-            if sku in st.session_state.empate_sel and st.session_state.empate_sel[sku] in proveedores:
-                default_idx = proveedores.index(st.session_state.empate_sel[sku])
+            opciones = [PLACEHOLDER] + proveedores
 
-            elegido = st.radio(
+            # Valor previo (si ya eligieron algo en otra interacción)
+            prev = st.session_state.empate_sel.get(sku, PLACEHOLDER)
+            idx = opciones.index(prev) if prev in opciones else 0
+
+            elegido = st.selectbox(
                 "Elige proveedor para este SKU",
-                proveedores,
-                index=default_idx,
-                key=f"radio_{sku}",
-                horizontal=True
+                opciones,
+                index=idx,
+                key=f"sel_{sku}"
             )
-            st.session_state.empate_sel[sku] = elegido
 
-            # tabla informativa de ese empate
+            # Actualiza session_state solo si eligió un proveedor real
+            if elegido != PLACEHOLDER:
+                st.session_state.empate_sel[sku] = elegido
+            else:
+                # Si vuelve a placeholder, borra la elección
+                st.session_state.empate_sel.pop(sku, None)
+
+            # Tabla informativa de precios
             g_show = g[['Proveedor','Precio Unitario']].rename(columns={'Precio Unitario':'Precio'}).copy()
             g_show['Precio'] = g_show['Precio'].map(lambda x: f"${float(x):,.4f}")
             st.markdown(g_show.to_html(index=False, classes='tbl', escape=False), unsafe_allow_html=True)
             st.write("")
+
 
 # ---------- Construir “ganadores” incluyendo elecciones (fuera de tabs para reutilizar) ----------
 gan_base = ganadores_unicos[['Proveedor','SKU','SKU_str','Nombre_canonico','Precio Unitario']].copy()
@@ -315,40 +328,65 @@ with tab_pedido:
                 .copy()
             )
 
-            # Inicializa cantidades previas desde session_state (si las hubiera)
-            if "cantidades" not in st.session_state:
-                st.session_state.cantidades = {}
-            base['Cantidad'] = [
-                st.session_state.cantidades.get((prov, str(sku)), 0)
-                for sku in base['SKU']
-            ]
-            base['Total'] = base['Cantidad'] * pd.to_numeric(base['Precio Unitario'], errors='coerce')
+            if modo_flechas:
+              # ===== MODO CON FLECHAS (number_input por fila) =====
+              cantidades = []
+              for _, row in base.iterrows():
+                  sku = str(row['SKU'])
+                  key = (prov, sku)
+                  if key not in st.session_state.cantidades:
+                      st.session_state.cantidades[key] = 0
+                  qty = st.number_input(
+                      f"Cantidad — SKU {sku}",
+                      min_value=0, step=1,
+                      value=int(st.session_state.cantidades[key]),
+                      key=f"qty_{prov}_{sku}"
+                  )
+                  st.session_state.cantidades[key] = qty
+                  cantidades.append(qty)
+          
+              g = base.copy()
+              g['Cantidad'] = cantidades
+              g['Total'] = (pd.to_numeric(g['Precio Unitario'], errors='coerce') * g['Cantidad']).fillna(0.0)
+              tablas_por_proveedor[prov] = g[['Cantidad','SKU','Nombre','Precio Unitario','Total']].copy()
+          
+              # Vista bonita
+              g_view = tablas_por_proveedor[prov].copy()
+              g_view['Precio Unitario'] = g_view['Precio Unitario'].map(lambda x: f"${float(x):,.4f}")
+              g_view['Total'] = g_view['Total'].map(lambda x: f"${float(x):,.4f}")
+              st.markdown(g_view.to_html(index=False, classes='tbl', escape=False), unsafe_allow_html=True)
+          
+          else:
+              # ===== MODO TABLA EDITABLE (data_editor) =====
+              edited = st.data_editor(
+                  base.assign(Cantidad=[
+                      st.session_state.cantidades.get((prov, str(sku)), 0) for sku in base['SKU']
+                  ]),
+                  num_rows="fixed",
+                  column_config={
+                      "Cantidad": st.column_config.NumberColumn("Cantidad", min_value=0, step=1),
+                      "Precio Unitario": st.column_config.NumberColumn("Precio Unitario", format="$%.4f", disabled=True),
+                      "Total": st.column_config.NumberColumn("Total", format="$%.4f", disabled=True),
+                      "SKU": st.column_config.TextColumn("SKU", disabled=True),
+                      "Nombre": st.column_config.TextColumn("Nombre", disabled=True),
+                  },
+                  use_container_width=True,
+                  hide_index=True,
+                  key=f"edit_{prov}"
+              )
+              edited['Total'] = edited['Cantidad'] * edited['Precio Unitario']
+          
+              # Persistir cantidades en session_state
+              for _, r in edited.iterrows():
+                  st.session_state.cantidades[(prov, str(r['SKU']))] = int(r['Cantidad'])
+          
+              tablas_por_proveedor[prov] = edited[['Cantidad','SKU','Nombre','Precio Unitario','Total']].copy()
+          
+          # Subtotal por proveedor (común a ambos modos)
+          subtotal = float(tablas_por_proveedor[prov]['Total'].sum())
+          subtotales[prov] = subtotal
+          st.metric("Subtotal", f"${subtotal:,.2f}")
 
-            # Tabla editable inline
-            edited = st.data_editor(
-                base,
-                num_rows="fixed",
-                column_config={
-                    "Cantidad": st.column_config.NumberColumn("Cantidad", min_value=0, step=1),
-                    "Precio Unitario": st.column_config.NumberColumn("Precio Unitario", format="$%.4f", disabled=True),
-                    "Total": st.column_config.NumberColumn("Total", format="$%.4f", disabled=True),
-                    "SKU": st.column_config.TextColumn("SKU", disabled=True),
-                    "Nombre": st.column_config.TextColumn("Nombre", disabled=True),
-                },
-                key=f"edit_{prov}"
-            )
-
-            # Recalcular total y guardar cantidades a session_state
-            edited['Total'] = edited['Cantidad'] * edited['Precio Unitario']
-            for _, r in edited.iterrows():
-                st.session_state.cantidades[(prov, str(r['SKU']))] = int(r['Cantidad'])
-
-            # Subtotal por proveedor
-            subtotal = float(edited['Total'].sum())
-            subtotales[prov] = subtotal
-            st.metric("Subtotal", f"${subtotal:,.2f}")
-
-            tablas_por_proveedor[prov] = edited[['Cantidad','SKU','Nombre','Precio Unitario','Total']].copy()
 
         # Total global
         total_global = sum(subtotales.values())
