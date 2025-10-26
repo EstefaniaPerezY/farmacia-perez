@@ -314,12 +314,13 @@ else:
         # campo de cantidad por fila (entero >= 0)
         cantidades = []
         for _, row in g.iterrows():
+            nombre = str(row['Nombre'])
             sku = str(row['SKU'])
             key = (prov, sku)
             if key not in st.session_state.cantidades:
                 st.session_state.cantidades[key] = 0
             qty = st.number_input(
-                f"Cantidad — SKU {sku}",
+                f"Cantidad — Nombre {nombre}",
                 min_value=0, step=1,
                 value=st.session_state.cantidades[key],
                 key=f"qty_{prov}_{sku}"
