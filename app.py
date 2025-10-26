@@ -320,7 +320,7 @@ else:
             if key not in st.session_state.cantidades:
                 st.session_state.cantidades[key] = 0
             qty = st.number_input(
-                f"Cantidad — Nombre {nombre}",
+                f"Cantidad — {nombre}",
                 min_value=0, step=1,
                 value=st.session_state.cantidades[key],
                 key=f"qty_{prov}_{sku}"
