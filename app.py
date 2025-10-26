@@ -393,12 +393,12 @@ with tab_pedido:
           # ===== Subtotal por proveedor (común a ambos modos) =====
           subtotal = float(tablas_por_proveedor[prov]['Total'].sum())
           subtotales[prov] = subtotal
-          st.metric("Subtotal", f"${subtotal:,.2f}")
+          st.metric("Subtotal", f"${subtotal:,.4f}")
 
 
         # Total global
         total_global = sum(subtotales.values())
-        total_global_placeholder.metric("Total general", f"${total_global:,.2f}")
+        total_global_placeholder.metric("Total general", f"${total_global:,.4f}")
 
         # Descarga (mover al sidebar para que esté siempre visible)
         with st.sidebar:
