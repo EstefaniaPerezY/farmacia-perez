@@ -49,7 +49,7 @@ CSS = """
 st.markdown(CSS, unsafe_allow_html=True)
 
 st.title("💊 Cotizador — Farmacia Pérez")
-st.write("Sube archivos **.xlsx** (uno por proveedor) con columnas **SKU**, **Nombre**, **Precio Unitario** Holaaaa.")
+st.write("Sube archivos **.xlsx** (uno por proveedor) con columnas **SKU**, **Nombre**, **Precio Unitario**.")
 
 # =========================
 # SIDEBAR: Parámetros
