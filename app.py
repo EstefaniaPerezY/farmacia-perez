@@ -245,14 +245,11 @@ with tab_empates:
     if empates_reales.empty:
         st.info("No hay empates.")
     else:
+        PLACEHOLDER = "— Selecciona proveedor —"
         skus_empatados = sorted(empates_reales['SKU_str'].unique())
 
-        # Progreso: solo cuentan los SKUs que ya tienen proveedor elegido (no placeholder)
-        resueltos = sum(1 for s in skus_empatados if s in st.session_state.empate_sel)
-        st.write(f"Progreso: **{resueltos}/{len(skus_empatados)} SKUs**")
-        st.progress(resueltos / len(skus_empatados) if len(skus_empatados) else 0.0)
-
-        PLACEHOLDER = "— Selecciona proveedor —"
+        # 1) Build a fresh dict of selections based on current widgets
+        sel_temp = dict(st.session_state.empate_sel)  # start from previous state (if any)
 
         for sku, g in empates_reales.groupby('SKU_str', sort=False):
             nombre = g.iloc[0]['Nombre_canonico']
@@ -261,9 +258,11 @@ with tab_empates:
             proveedores = list(g['Proveedor'].unique())
             opciones = [PLACEHOLDER] + proveedores
 
-            # Valor previo (si ya eligieron algo en otra interacción)
-            prev = st.session_state.empate_sel.get(sku, PLACEHOLDER)
-            idx = opciones.index(prev) if prev in opciones else 0
+            prev = sel_temp.get(sku, PLACEHOLDER)
+            try:
+                idx = opciones.index(prev)
+            except ValueError:
+                idx = 0
 
             elegido = st.selectbox(
                 "Elige proveedor para este SKU",
@@ -272,18 +271,26 @@ with tab_empates:
                 key=f"sel_{sku}"
             )
 
-            # Actualiza session_state solo si eligió un proveedor real
             if elegido != PLACEHOLDER:
-                st.session_state.empate_sel[sku] = elegido
+                sel_temp[sku] = elegido
             else:
-                # Si vuelve a placeholder, borra la elección
-                st.session_state.empate_sel.pop(sku, None)
+                sel_temp.pop(sku, None)
 
-            # Tabla informativa de precios
+            # Tabla informativa
             g_show = g[['Proveedor','Precio Unitario']].rename(columns={'Precio Unitario':'Precio'}).copy()
             g_show['Precio'] = g_show['Precio'].map(lambda x: f"${float(x):,.4f}")
             st.markdown(g_show.to_html(index=False, classes='tbl', escape=False), unsafe_allow_html=True)
             st.write("")
+
+        # 2) Persist the updated selections to session_state
+        st.session_state.empate_sel = sel_temp
+
+        # 3) NOW compute and show progress with the latest selections
+        resueltos = len(sel_temp)
+        total = len(skus_empatados)
+        st.write(f"Progreso: **{resueltos}/{total} SKUs**")
+        st.progress(resueltos / total if total else 0.0)
+
 
 
 # ---------- Construir “ganadores” incluyendo elecciones (fuera de tabs para reutilizar) ----------
@@ -333,11 +340,12 @@ with tab_pedido:
               cantidades = []
               for _, row in base.iterrows():
                   sku = str(row['SKU'])
+                  name = str(row['Nombre'])
                   key = (prov, sku)
                   if key not in st.session_state.cantidades:
                       st.session_state.cantidades[key] = 0
                   qty = st.number_input(
-                      f"Cantidad — SKU {sku}",
+                      f"Cantidad — {name}",
                       min_value=0, step=1,
                       value=int(st.session_state.cantidades[key]),
                       key=f"qty_{prov}_{sku}"
