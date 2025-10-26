@@ -14,6 +14,9 @@ st.set_page_config(page_title="Cotizador Farmacia Pérez", page_icon="💊", lay
 
 CSS = """
 <style>
+  /* Estrechar el contenido para que se vea más ordenado */
+  .block-container { max-width: 1100px; padding-top: 1rem; }
+  
   .box {
     font-family: Roboto, Arial, sans-serif;
     font-size: 15px;
