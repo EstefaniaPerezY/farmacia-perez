@@ -7,10 +7,6 @@ Original file is located at
     https://colab.research.google.com/drive/1I7QKCDO1xbWw1LG7PMQheKyZduK2ZLrZ
 """
 
-!pip -q install pyfiglet
-from pyfiglet import Figlet
-f = Figlet(font='larry3d')     # prueba: 'slant','standard','banner3-D','larry3d'
-print(f.renderText('FARMACIA PEREZ'))
 
 """
 ## Cotizaciones
