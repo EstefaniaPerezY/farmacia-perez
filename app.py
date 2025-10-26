@@ -1,7 +1,6 @@
 # app.py
 import io
 import os
-import glob
 import datetime
 import pytz
 import pandas as pd
@@ -220,9 +219,6 @@ empates_reales = empates_reales.sort_values(
 # =========================
 # RENDER RESUMEN EN HTML (mismo estilo)
 # =========================
-import io
-import pandas as pd
-import streamlit as st
 
 # ========= Helpers =========
 def fmt_money4(x):
@@ -237,146 +233,156 @@ if "empate_sel" not in st.session_state:
 if "cantidades" not in st.session_state:
     st.session_state.cantidades = {}   # {(prov, sku_str): int}
 
-st.markdown("<div class='box'>", unsafe_allow_html=True)
-st.markdown("<h3>💼 Tu cotización ha finalizado</h3>", unsafe_allow_html=True)
-st.write(f"Resumen con precisión de empate: **{precision_empate}** decimales.")
+# ======== PESTAÑAS =========
+tab_empates, tab_pedido = st.tabs(["1) Resolver empates", "2) Armar pedido"])
 
-# ========= 2.1 Selección de proveedor por cada SKU empatado =========
-st.markdown("<h4>⚖️ Empates detectados</h4>", unsafe_allow_html=True)
+# ---------- TAB 1: Resolver empates ----------
+with tab_empates:
+    st.markdown("<h4>⚖️ Empates detectados</h4>", unsafe_allow_html=True)
 
-if empates_reales.empty:
-    st.info("No hay empates.")
-else:
-    for sku, g in empates_reales.groupby('SKU_str', sort=False):
-        nombre = g.iloc[0]['Nombre_canonico']
-        st.markdown(f"**SKU {sku} — {nombre}**")
+    if empates_reales.empty:
+        st.info("No hay empates.")
+    else:
+        # progreso (cuántos SKUs empatados ya tienen elección)
+        skus_empatados = sorted(empates_reales['SKU_str'].unique())
+        resueltos = sum(1 for s in skus_empatados if s in st.session_state.empate_sel)
+        st.write(f"Progreso: **{resueltos}/{len(skus_empatados)} SKUs**")
+        st.progress(resueltos / len(skus_empatados))
 
-        proveedores = list(g['Proveedor'].unique())
-        # selección única (radio evita errores de texto)
-        default_idx = 0
-        if sku in st.session_state.empate_sel and st.session_state.empate_sel[sku] in proveedores:
-            default_idx = proveedores.index(st.session_state.empate_sel[sku])
+        for sku, g in empates_reales.groupby('SKU_str', sort=False):
+            nombre = g.iloc[0]['Nombre_canonico']
+            st.markdown(f"**SKU {sku} — {nombre}**")
 
-        elegido = st.radio(
-            "Elige proveedor para este SKU",
-            proveedores,
-            index=default_idx,
-            key=f"radio_{sku}",
-            horizontal=True
-        )
-        st.session_state.empate_sel[sku] = elegido
+            proveedores = list(g['Proveedor'].unique())
+            default_idx = 0
+            if sku in st.session_state.empate_sel and st.session_state.empate_sel[sku] in proveedores:
+                default_idx = proveedores.index(st.session_state.empate_sel[sku])
 
-        # muestra tabla de ese empate (informativa)
-        g_show = g[['Proveedor','Precio Unitario']].rename(columns={'Precio Unitario':'Precio'}).copy()
-        g_show['Precio'] = g_show['Precio'].map(fmt_money4)
-        st.markdown(g_show.to_html(index=False, classes='tbl', escape=False), unsafe_allow_html=True)
-        st.write("")
+            elegido = st.radio(
+                "Elige proveedor para este SKU",
+                proveedores,
+                index=default_idx,
+                key=f"radio_{sku}",
+                horizontal=True
+            )
+            st.session_state.empate_sel[sku] = elegido
 
-st.markdown("<hr/>", unsafe_allow_html=True)
+            # tabla informativa de ese empate
+            g_show = g[['Proveedor','Precio Unitario']].rename(columns={'Precio Unitario':'Precio'}).copy()
+            g_show['Precio'] = g_show['Precio'].map(lambda x: f"${float(x):,.4f}")
+            st.markdown(g_show.to_html(index=False, classes='tbl', escape=False), unsafe_allow_html=True)
+            st.write("")
 
-# ========= 2.2 Construir “ganadores” por proveedor incluyendo elecciones de empates =========
-# Base: ganadores_unicos (ya son únicos)
+# ---------- Construir “ganadores” incluyendo elecciones (fuera de tabs para reutilizar) ----------
 gan_base = ganadores_unicos[['Proveedor','SKU','SKU_str','Nombre_canonico','Precio Unitario']].copy()
 
-# Agregar elegidos de los empates
 if not empates_reales.empty and len(st.session_state.empate_sel) > 0:
     elegidas = []
     for sku, prov_elegido in st.session_state.empate_sel.items():
         block = empates_reales[(empates_reales['SKU_str'] == sku) & (empates_reales['Proveedor'] == prov_elegido)]
         if not block.empty:
-            # tomamos una fila (todas tienen el mismo precio en el empate)
             elegidas.append(block[['Proveedor','SKU','SKU_str','Nombre_canonico','Precio Unitario']].iloc[0])
-    if elegidas:
-        gan_extra = pd.DataFrame(elegidas)
-        gan_total = pd.concat([gan_base, gan_extra], ignore_index=True)
-    else:
-        gan_total = gan_base.copy()
+    gan_total = pd.concat([gan_base, pd.DataFrame(elegidas)], ignore_index=True) if elegidas else gan_base.copy()
 else:
     gan_total = gan_base.copy()
 
-# ========= 2.3 Cantidades por proveedor y cálculo de totales =========
-st.markdown("<h4>🏆 Ganadores por proveedor</h4>", unsafe_allow_html=True)
+# ---------- TAB 2: Armar pedido ----------
+with tab_pedido:
+    st.markdown("<h4>🏆 Ganadores por proveedor</h4>", unsafe_allow_html=True)
 
-# Safeguard: si por alguna razón no hay ganadores, avisa
-if gan_total.empty:
-    st.info("No hay ganadores por proveedor aún. Elige proveedores en los empates si aplica.")
-else:
-    proveedores_orden = sorted(gan_total['Proveedor'].unique())
-    tablas_por_proveedor = {}  # guardaremos los DF finales para exportación
+    if gan_total.empty:
+        st.info("No hay ganadores por proveedor aún. Elige proveedores en los empates si aplica.")
+    else:
+        proveedores_orden = sorted(gan_total['Proveedor'].unique())
+        tablas_por_proveedor = {}
 
-    for prov in proveedores_orden:
-        st.markdown(f"<h5>🏪 {prov}</h5>", unsafe_allow_html=True)
-        g = (
-            gan_total[gan_total['Proveedor'] == prov]
-            [['SKU_str','Nombre_canonico','Precio Unitario']]
-            .rename(columns={'SKU_str':'SKU','Nombre_canonico':'Nombre'})
-            .sort_values('SKU')
-            .copy()
-        )
+        # Resumen global (aparece arriba)
+        colA, colB, colC = st.columns([1,1,1])
+        total_global_placeholder = colA.empty()  # lo llenamos después
 
-        # campo de cantidad por fila (entero >= 0)
-        cantidades = []
-        for _, row in g.iterrows():
-            nombre = str(row['Nombre'])
-            sku = str(row['SKU'])
-            key = (prov, sku)
-            if key not in st.session_state.cantidades:
-                st.session_state.cantidades[key] = 0
-            qty = st.number_input(
-                f"Cantidad — {nombre}",
-                min_value=0, step=1,
-                value=st.session_state.cantidades[key],
-                key=f"qty_{prov}_{sku}"
+        subtotales = {}
+
+        for prov in proveedores_orden:
+            st.markdown(f"<h5>🏪 {prov}</h5>", unsafe_allow_html=True)
+
+            base = (
+                gan_total[gan_total['Proveedor'] == prov]
+                [['SKU_str','Nombre_canonico','Precio Unitario']]
+                .rename(columns={'SKU_str':'SKU','Nombre_canonico':'Nombre'})
+                .assign(SKU_num=lambda d: pd.to_numeric(d['SKU'], errors='coerce'))
+                .sort_values('SKU_num')
+                .drop(columns='SKU_num')
+                .copy()
             )
-            st.session_state.cantidades[key] = qty
-            cantidades.append(qty)
 
-        g['Cantidad'] = cantidades
-        g['Total'] = (pd.to_numeric(g['Precio Unitario'], errors='coerce') * g['Cantidad']).fillna(0.0)
+            # Inicializa cantidades previas desde session_state (si las hubiera)
+            if "cantidades" not in st.session_state:
+                st.session_state.cantidades = {}
+            base['Cantidad'] = [
+                st.session_state.cantidades.get((prov, str(sku)), 0)
+                for sku in base['SKU']
+            ]
+            base['Total'] = base['Cantidad'] * pd.to_numeric(base['Precio Unitario'], errors='coerce')
 
-        # reordenar columnas para vista/descarga
-        g = g[['Cantidad','SKU','Nombre','Precio Unitario','Total']]
+            # Tabla editable inline
+            edited = st.data_editor(
+                base,
+                num_rows="fixed",
+                column_config={
+                    "Cantidad": st.column_config.NumberColumn("Cantidad", min_value=0, step=1),
+                    "Precio Unitario": st.column_config.NumberColumn("Precio Unitario", format="$%.4f", disabled=True),
+                    "Total": st.column_config.NumberColumn("Total", format="$%.4f", disabled=True),
+                    "SKU": st.column_config.TextColumn("SKU", disabled=True),
+                    "Nombre": st.column_config.TextColumn("Nombre", disabled=True),
+                },
+                key=f"edit_{prov}"
+            )
 
-        # Mostrar tabla (formateo precios)
-        g_view = g.copy()
-        g_view['Precio Unitario'] = g_view['Precio Unitario'].map(fmt_money4)
-        g_view['Total'] = g_view['Total'].map(fmt_money4)
-        st.markdown(g_view.to_html(index=False, classes='tbl', escape=False), unsafe_allow_html=True)
-        st.write("")
+            # Recalcular total y guardar cantidades a session_state
+            edited['Total'] = edited['Cantidad'] * edited['Precio Unitario']
+            for _, r in edited.iterrows():
+                st.session_state.cantidades[(prov, str(r['SKU']))] = int(r['Cantidad'])
 
-        tablas_por_proveedor[prov] = g
+            # Subtotal por proveedor
+            subtotal = float(edited['Total'].sum())
+            subtotales[prov] = subtotal
+            st.metric("Subtotal", f"${subtotal:,.2f}")
 
-# ========= 2.4 Descargar Excel final por proveedor =========
-# (1 archivo, varias hojas: una por proveedor, columnas en orden requerido)
-if gan_total.empty:
-    st.warning("No hay nada para exportar todavía.")
-else:
-    output = io.BytesIO()
-    cst = pytz.timezone("America/Mexico_City")
-    timestamp = datetime.datetime.now(cst).strftime("%Y%m%d_%H%M%S")
-    excel_name = f"pedido_por_proveedor_{timestamp}.xlsx"
+            tablas_por_proveedor[prov] = edited[['Cantidad','SKU','Nombre','Precio Unitario','Total']].copy()
 
-    with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
-        for prov, dfprov in tablas_por_proveedor.items():
-            # Garantiza tipos y orden
-            outdf = dfprov[['Cantidad','SKU','Nombre','Precio Unitario','Total']].copy()
-            outdf.to_excel(writer, index=False, sheet_name=str(prov)[:31])  # Excel limita a 31 chars
+        # Total global
+        total_global = sum(subtotales.values())
+        total_global_placeholder.metric("Total general", f"${total_global:,.2f}")
 
-    st.download_button(
-        label="📥 Generar Excel por proveedor",
-        data=output.getvalue(),
-        file_name=excel_name,
-        mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet"
-    )
+        # Descarga (mover al sidebar para que esté siempre visible)
+        with st.sidebar:
+            st.subheader("📥 Exportar")
+            output = io.BytesIO()
+            cst = pytz.timezone("America/Mexico_City")
+            timestamp = datetime.datetime.now(cst).strftime("%Y%m%d_%H%M%S")
+            excel_name = f"pedido_por_proveedor_{timestamp}.xlsx"
 
-st.markdown("</div>", unsafe_allow_html=True)
+            with pd.ExcelWriter(output, engine="xlsxwriter") as writer:
+                for prov, dfprov in tablas_por_proveedor.items():
+                    outdf = dfprov[['Cantidad','SKU','Nombre','Precio Unitario','Total']].copy()
+                    outdf.to_excel(writer, index=False, sheet_name=str(prov)[:31])
+                    # formato bonito en Excel
+                    wb  = writer.book
+                    money = wb.add_format({'num_format': '$#,##0.00'})
+                    qty   = wb.add_format({'num_format': '0'})
+                    ws = writer.sheets[str(prov)[:31]]
+                    ws.set_column(0, 0, 10, qty)      # Cantidad
+                    ws.set_column(1, 1, 12)           # SKU
+                    ws.set_column(2, 2, 28)           # Nombre
+                    ws.set_column(3, 4, 14, money)    # Precio, Total
 
-# =========================
-# DESCARGA DEL EXCEL (en memoria)
-# =========================
-cst = pytz.timezone("America/Mexico_City")
-timestamp = datetime.datetime.now(cst).strftime("%Y%m%d_%H%M%S")
-excel_name = f"cotizacion_{timestamp}.xlsx"
+            st.download_button(
+                label="Generar Excel por proveedor",
+                data=output.getvalue(),
+                file_name=excel_name,
+                mime="application/vnd.openxmlformats-officedocument.spreadsheetml.sheet",
+                use_container_width=True
+            )
 
 
 # =========================
